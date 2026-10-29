@@ -453,3 +453,54 @@ test_128_bit_integers_compare_exactly :: proc(t: ^testing.T) {
 	wrapped := O{(1 << 64) + 1}
 	expect_fail(t, &wrapped, "x", "oneof")
 }
+
+// required must agree with Odin's own idea of a zero value.
+
+@(test)
+test_required_treats_negative_zero_as_zero :: proc(t: ^testing.T) {
+	R :: struct {
+		f: f64 `validate:"required"`,
+		g: f32 `validate:"required"`,
+	}
+	r := R{-0.0, -0.0}
+	expect_errors(t, &r, {{"f", "required", .Rule_Failed}, {"g", "required", .Rule_Failed}})
+}
+
+@(test)
+test_required_struct_compares_fields_not_bytes :: proc(t: ^testing.T) {
+	Inner :: struct {
+		s:    string,
+		list: []int,
+		f:    f64,
+	}
+	R :: struct {
+		inner: Inner `validate:"required"`,
+		arr:   [2]string `validate:"required"`,
+	}
+	text := "abc"
+	nums := []int{1, 2}
+	r := R {
+		inner = Inner{s = text[:0], list = nums[:0], f = -0.0},
+		arr = {text[:0], text[3:]},
+	}
+	expect_errors(t, &r, {{"inner", "required", .Rule_Failed}, {"arr", "required", .Rule_Failed}})
+
+	set := R {
+		inner = Inner{s = text},
+		arr = {"", text},
+	}
+	expect_valid(t, &set)
+}
+
+@(test)
+test_omitempty_skips_struct_holding_empty_views :: proc(t: ^testing.T) {
+	Inner :: struct {
+		s: string `validate:"required"`,
+	}
+	R :: struct {
+		inner: Inner `validate:"omitempty"`,
+	}
+	text := "abc"
+	r := R{Inner{text[:0]}}
+	expect_valid(t, &r)
+}

@@ -452,7 +452,11 @@ unwrap :: proc(v: any) -> (target: any, present: bool) {
 	return target, true
 }
 
-// is_zero reports whether `v` holds its type's zero value, treating empty strings, slices and maps as zero.
+/*
+is_zero reports whether `v` holds its type's zero value. Strings, slices and
+maps count as zero when empty, floats when they equal 0 (so -0.0 is zero),
+and structs and arrays when every field or element is zero.
+*/
 @(private)
 is_zero :: proc(v: any) -> bool {
 	if v.data == nil || v.id == nil {
@@ -464,6 +468,10 @@ is_zero :: proc(v: any) -> bool {
 		if s, ok := reflect.as_string(v); ok {
 			return len(s) == 0
 		}
+	case runtime.Type_Info_Float:
+		if f, ok := reflect.as_f64(v); ok {
+			return f == 0
+		}
 	case runtime.Type_Info_Slice:
 		return (^runtime.Raw_Slice)(v.data).len == 0
 	case runtime.Type_Info_Dynamic_Array:
@@ -474,10 +482,33 @@ is_zero :: proc(v: any) -> bool {
 		return (^rawptr)(v.data)^ == nil
 	case runtime.Type_Info_Union:
 		return union_value(v, info).data == nil
+	case runtime.Type_Info_Struct:
+		if .raw_union not_in info.flags && info.soa_kind == .None {
+			for i in 0 ..< int(info.field_count) {
+				if !is_zero(any{rawptr(uintptr(v.data) + info.offsets[i]), info.types[i].id}) {
+					return false
+				}
+			}
+			return true
+		}
+	case runtime.Type_Info_Array:
+		return elems_zero(v.data, info.count, info.elem, info.elem_size)
+	case runtime.Type_Info_Enumerated_Array:
+		return elems_zero(v.data, info.count, info.elem, info.elem_size)
 	}
 	bytes := ([^]u8)(v.data)[:ti.size]
 	for c in bytes {
 		if c != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+@(private)
+elems_zero :: proc(data: rawptr, count: int, elem: ^runtime.Type_Info, elem_size: int) -> bool {
+	for i in 0 ..< count {
+		if !is_zero(any{rawptr(uintptr(data) + uintptr(i * elem_size)), elem.id}) {
 			return false
 		}
 	}
