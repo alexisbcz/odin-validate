@@ -424,3 +424,32 @@ test_unsupported_type :: proc(t: ^testing.T) {
 	one := S{1}
 	expect_message(t, &one, `invalid tag on a: rule "email" doesn't apply to int`)
 }
+
+// 128-bit integers must compare on their full value, not a truncated 64-bit one.
+
+@(test)
+test_128_bit_integers_compare_exactly :: proc(t: ^testing.T) {
+	S :: struct {
+		x: i128 `validate:"gt=0"`,
+	}
+	big := S{1 << 70}
+	expect_valid(t, &big)
+	neg := S{-(1 << 70)}
+	expect_fail(t, &neg, "x", "gt")
+
+	U :: struct {
+		x: u128 `validate:"lte=5"`,
+	}
+	huge := U{1 << 80}
+	expect_fail(t, &huge, "x", "lte")
+	top := U{max(u128)}
+	expect_fail(t, &top, "x", "lte")
+	small := U{5}
+	expect_valid(t, &small)
+
+	O :: struct {
+		x: u128 `validate:"oneof=1|2"`,
+	}
+	wrapped := O{(1 << 64) + 1}
+	expect_fail(t, &wrapped, "x", "oneof")
+}

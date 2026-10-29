@@ -144,10 +144,15 @@ classify :: proc(v: any) -> Value_Kind {
 	return .Other
 }
 
-// Number holds an integer or float field value, or a parsed parameter, for comparison.
+/*
+Number holds an integer or float field value, or a parsed parameter, for
+comparison. `huge` marks an unsigned 128-bit value above max(i128); it is
+greater than every parameter, because parameters parse as i128.
+*/
 @(private)
 Number :: struct {
 	is_float: bool,
+	huge:     bool,
 	i:        i128,
 	f:        f64,
 }
@@ -160,6 +165,28 @@ number_of :: proc(v: any, kind: Value_Kind) -> (n: Number, ok: bool) {
 		return
 	}
 	ti := runtime.type_info_core(type_info_of(v.id))
+	if ti.size == 16 {
+		// reflect.as_i64 and as_u64 truncate 128-bit values, so read them directly.
+		ok = true
+		core := any{v.data, ti.id}
+		switch x in core {
+		case i128:
+			n.i = x
+		case i128le:
+			n.i = i128(x)
+		case i128be:
+			n.i = i128(x)
+		case u128:
+			n.i, n.huge = u128_number(x)
+		case u128le:
+			n.i, n.huge = u128_number(u128(x))
+		case u128be:
+			n.i, n.huge = u128_number(u128(x))
+		case:
+			ok = false
+		}
+		return
+	}
 	signed := true
 	if info, is_int := ti.variant.(runtime.Type_Info_Integer); is_int {
 		signed = info.signed
@@ -174,6 +201,14 @@ number_of :: proc(v: any, kind: Value_Kind) -> (n: Number, ok: bool) {
 		n.i = i128(x)
 	}
 	return
+}
+
+@(private)
+u128_number :: proc(x: u128) -> (i: i128, huge: bool) {
+	if x > u128(max(i128)) {
+		return max(i128), true
+	}
+	return i128(x), false
 }
 
 // parse_number parses `s` as a whole integer, or as a float when `as_float` is set.
@@ -204,6 +239,9 @@ compare_numbers :: proc(a, b: Number) -> int {
 			return 0
 		}
 		return 2 // NaN compares as nothing; every comparison then fails.
+	}
+	if a.huge != b.huge {
+		return 1 if a.huge else -1
 	}
 	switch {
 	case a.i < b.i:
