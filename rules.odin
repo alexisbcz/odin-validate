@@ -124,12 +124,15 @@ Value_Kind :: enum {
 	Enum,
 }
 
+// classify sorts a type into the families the rules care about. A nil type is Other.
 @(private)
-classify :: proc(v: any) -> Value_Kind {
-	ti := runtime.type_info_base(type_info_of(v.id))
-	#partial switch _ in ti.variant {
+classify :: proc(ti: ^runtime.Type_Info) -> Value_Kind {
+	if ti == nil {
+		return .Other
+	}
+	#partial switch info in runtime.type_info_base(ti).variant {
 	case runtime.Type_Info_String:
-		if _, ok := reflect.as_string(v); ok {
+		if info.encoding == .UTF_8 {
 			return .String
 		}
 	case runtime.Type_Info_Integer, runtime.Type_Info_Rune:
@@ -272,18 +275,91 @@ verdict :: proc(pass: bool, fail: Outcome) -> Outcome {
 	return out
 }
 
-// check_builtin runs one built-in rule other than required, omitempty and dive against `v`.
+/*
+check_params checks a rule's parameter and whether the rule applies to type
+`ti`, without looking at a value. It returns Pass, Malformed or Unsupported.
+A nil `ti` means the type is only known at run time, as for a union with
+several variants; then only the type-independent checks run.
+*/
 @(private)
-check_builtin :: proc(b: Builtin, v: any, param: string, has_param: bool) -> Outcome {
+check_params :: proc(b: Builtin, ti: ^runtime.Type_Info, param: string, has_param: bool) -> Outcome {
+	kind := classify(ti)
+	known := ti != nil
 	#partial switch b {
 	case .Email, .Url, .Uuid, .Alpha, .Alnum, .Numeric, .Hex:
 		if has_param {
 			return malformed("doesn't take a parameter")
 		}
-		s, is_string := reflect.as_string(v)
-		if !is_string {
+		if known && kind != .String {
 			return unsupported()
 		}
+		return {}
+	}
+
+	if !has_param || param == "" {
+		return malformed("needs a parameter, for example min=3")
+	}
+
+	#partial switch b {
+	case .Prefix, .Suffix, .Contains:
+		if known && kind != .String {
+			return unsupported()
+		}
+	case .Oneof:
+		if known && kind != .String && kind != .Integer && kind != .Float && kind != .Enum {
+			return unsupported()
+		}
+		rest := param
+		for opt in strings.split_iterator(&rest, "|") {
+			if opt == "" {
+				return malformed("has an empty option")
+			}
+			if (kind == .Integer || kind == .Float) && known {
+				if _, ok := parse_number(opt, kind == .Float); !ok {
+					return malformed("has an option that isn't a number")
+				}
+			}
+		}
+		// split_iterator drops a trailing empty option, so reject `a|` here.
+		if strings.has_suffix(param, "|") {
+			return malformed("has an empty option")
+		}
+	case .Min, .Max, .Len, .Gt, .Gte, .Lt, .Lte:
+		if !known {
+			return {}
+		}
+		switch kind {
+		case .String, .Collection:
+			count, ok := parse_number(param, false)
+			if !ok || count.i < 0 {
+				return malformed("needs a non-negative integer parameter")
+			}
+		case .Integer:
+			if _, ok := parse_number(param, false); !ok {
+				return malformed("needs an integer parameter")
+			}
+		case .Float:
+			if _, ok := parse_number(param, true); !ok {
+				return malformed("needs a number parameter")
+			}
+		case .Enum, .Other:
+			return unsupported()
+		}
+	case:
+		return unsupported()
+	}
+	return {}
+}
+
+// check_builtin runs one built-in rule other than required, omitempty and dive against `v`.
+@(private)
+check_builtin :: proc(b: Builtin, v: any, param: string, has_param: bool) -> Outcome {
+	if pre := check_params(b, type_info_of(v.id), param, has_param); pre.result != .Pass {
+		return pre
+	}
+	#partial switch b {
+	case .Email, .Url, .Uuid, .Alpha, .Alnum, .Numeric, .Hex:
+		s, _ := reflect.as_string(v)
 		#partial switch b {
 		case .Email:
 			return verdict(is_email(s), {before = "must be a valid email address"})
@@ -300,18 +376,8 @@ check_builtin :: proc(b: Builtin, v: any, param: string, has_param: bool) -> Out
 		case .Hex:
 			return verdict(is_hex(s), {before = "must be a hexadecimal number"})
 		}
-	}
-
-	if !has_param || param == "" {
-		return malformed("needs a parameter, for example min=3")
-	}
-
-	#partial switch b {
 	case .Prefix, .Suffix, .Contains:
-		s, is_string := reflect.as_string(v)
-		if !is_string {
-			return unsupported()
-		}
+		s, _ := reflect.as_string(v)
 		#partial switch b {
 		case .Prefix:
 			return verdict(strings.has_prefix(s, param), {before = "must start with \"", show_param = true, after = "\""})
@@ -330,7 +396,7 @@ check_builtin :: proc(b: Builtin, v: any, param: string, has_param: bool) -> Out
 
 @(private)
 check_oneof :: proc(v: any, param: string) -> Outcome {
-	kind := classify(v)
+	kind := classify(type_info_of(v.id))
 	if kind != .String && kind != .Integer && kind != .Float && kind != .Enum {
 		return unsupported()
 	}
@@ -373,7 +439,7 @@ check_oneof :: proc(v: any, param: string) -> Outcome {
 
 @(private)
 check_compare :: proc(b: Builtin, v: any, param: string) -> Outcome {
-	kind := classify(v)
+	kind := classify(type_info_of(v.id))
 	got, want: Number
 	switch kind {
 	case .String, .Collection:

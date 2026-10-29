@@ -280,10 +280,116 @@ walk_struct :: proc(w: ^Walker, v: any, info: runtime.Type_Info_Struct) {
 	}
 }
 
+/*
+static_target follows pointers and single-variant unions such as `Maybe(T)`
+from type `ti` to the type their rules apply to. It returns nil when the
+type is only known at run time, as for a union with several variants.
+*/
+@(private)
+static_target :: proc(ti: ^runtime.Type_Info) -> ^runtime.Type_Info {
+	t := ti
+	for _ in 0 ..< 16 {
+		if t == nil {
+			return nil
+		}
+		#partial switch info in runtime.type_info_base(t).variant {
+		case runtime.Type_Info_Pointer:
+			if info.elem == nil {
+				return t
+			}
+			t = info.elem
+		case runtime.Type_Info_Union:
+			if len(info.variants) != 1 {
+				return nil
+			}
+			t = info.variants[0]
+		case:
+			return t
+		}
+	}
+	return t
+}
+
+// elem_type returns the element type of an array or slice type, or nil for any other type.
+@(private)
+elem_type :: proc(ti: ^runtime.Type_Info) -> ^runtime.Type_Info {
+	#partial switch info in runtime.type_info_base(ti).variant {
+	case runtime.Type_Info_Array:
+		return info.elem
+	case runtime.Type_Info_Enumerated_Array:
+		return info.elem
+	case runtime.Type_Info_Slice:
+		return info.elem
+	case runtime.Type_Info_Dynamic_Array:
+		return info.elem
+	}
+	return nil
+}
+
+/*
+lint_tag checks every rule in `rules` against the static type of `v` before
+any rule runs, and reports the first tag mistake. Doing it up front means a
+typo shows up on every run, even when the field is nil, skipped by omitempty,
+or an empty slice under dive. Returns false when it reported an error.
+*/
+@(private)
+lint_tag :: proc(w: ^Walker, v: any, rules: string) -> bool {
+	st := static_target(type_info_of(v.id))
+	it := Tag_Iter {
+		rest = rules,
+	}
+	for {
+		rule, more := tag_next(&it)
+		if !more {
+			return true
+		}
+		name, param, has_param := split_rule(rule)
+		if name == "" {
+			report(w, .Malformed_Tag, "", param, {})
+			return false
+		}
+		b := builtin_from_name(name)
+		#partial switch b {
+		case .Omitempty, .Required, .Dive:
+			if has_param {
+				report(w, .Malformed_Tag, name, param, {before = "doesn't take a parameter"})
+				return false
+			}
+			if b == .Dive && st != nil {
+				elem := elem_type(st)
+				if elem == nil {
+					report(w, .Unsupported_Type, name, "", {}, st)
+					return false
+				}
+				st = static_target(elem)
+			}
+		case .None:
+			if w.validator == nil || w.validator.rules[name] == nil {
+				report(w, .Unknown_Rule, name, param, {})
+				return false
+			}
+		case:
+			out := check_params(b, st, param, has_param)
+			#partial switch out.result {
+			case .Malformed:
+				report(w, .Malformed_Tag, name, param, out)
+				return false
+			case .Unsupported:
+				report(w, .Unsupported_Type, name, param, out, st)
+				return false
+			}
+		}
+	}
+}
+
 // check_field applies `rules` to `v`, then walks what `v` contains.
 @(private)
 check_field :: proc(w: ^Walker, v: any, rules: string) {
 	if strings.trim_space(rules) == "" {
+		walk_value(w, v)
+		return
+	}
+	if !lint_tag(w, v, rules) {
 		walk_value(w, v)
 		return
 	}
