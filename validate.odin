@@ -19,7 +19,8 @@ like `user.addresses[2].zip`.
 
 Built-in rules:
 - required: the value isn't the zero value. A nil pointer, nil Maybe, empty
-  string, empty slice or map, `0` and `false` all fail.
+  string, empty slice or map, `0`, `-0.0` and `false` all fail, and so does
+  a struct or array whose fields or elements are all zero.
 - omitempty: when the value is zero, skip the remaining rules and nested fields.
 - min, max, len, gt, gte, lt, lte: compare the length of strings (in runes),
   slices, arrays and maps, or the value of integers and floats.
@@ -35,7 +36,10 @@ Built-in rules:
 Rules run in tag order and stop at the first failure for that field, so an
 empty name reports `required` and not also `min`. Nested fields still run.
 For pointers and unions, rules other than required apply to the value they
-hold; when they hold nothing, only required can fail.
+hold; when they hold nothing, only required can fail. Tag mistakes are
+different: every tag is checked against the field's type before any rule
+runs, so an unknown rule or a bad parameter is reported even on a nil
+pointer, a zero value under omitempty or an empty slice under dive.
 
 Register extra rules on a Validator with register_rule and run them with
 validate_with.

@@ -108,6 +108,7 @@ Some details worth knowing:
 - Rules on a field run in order and stop at the first failure, so an empty name reports `required` and not also `min`.
 - Format rules fail on the empty string. Put `omitempty` first for optional fields.
 - For pointers and unions such as `Maybe(T)`, `required` checks for nil, and the other rules apply to the value inside. When there is no value inside, only `required` can fail.
+- Structs and arrays count as zero when every field or element is zero, and `-0.0` counts as zero.
 - A tag of `-` skips the field and everything inside it.
 - Validation walks nested structs, slices, arrays, pointers and unions even without a tag. Map contents aren't, because map order isn't stable.
 
@@ -145,7 +146,7 @@ A rule receives the field value, or the value a pointer or union holds, and the 
 
 ## Malformed tags
 
-A broken tag never panics. It becomes a `Field_Error` whose `kind` says what went wrong:
+A broken tag never panics. It becomes a `Field_Error` whose `kind` says what went wrong. Validation checks each tag against the field's type before any rule runs, so a mistake shows up on every run, even when the field is a nil pointer, a zero value under `omitempty` or an empty slice under `dive`:
 
 | Kind | Example tag | Message |
 | --- | --- | --- |
